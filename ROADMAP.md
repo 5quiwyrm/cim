@@ -67,6 +67,7 @@ This phase will include features such as:
 - [X] Selections and registers
 - [ ] Syntax highlighting
 - [ ] Autocomplete
+- [ ] Language-based configuration
 - [ ] Basic shell interaction (running shell commands)
 - [ ] File picker
 
