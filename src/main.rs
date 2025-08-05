@@ -93,8 +93,8 @@ impl Buffer {
 }
 
 impl Buffer {
-    pub fn type_char(&mut self, ch: char) -> Result<(), ()> {
-        let curr_line = self.contents.get_mut(self.cline).ok_or(())?;
+    pub fn type_char(&mut self, ch: char) -> Option<()> {
+        let curr_line = self.contents.get_mut(self.cline)?;
         let curr_line_copy = curr_line.clone();
         curr_line.clear();
         let mut typed = false;
@@ -110,12 +110,12 @@ impl Buffer {
         }
         self.cchar += 1;
         self.has_unsaved_changes = true;
-        Ok(())
+        Some(())
     }
 
     // Ok(char) where char is the character deleted ('\n' means newline).
     // Err(()) means no work was done.
-    pub fn backspace(&mut self) -> Result<char, ()> {
+    pub fn backspace(&mut self) -> Option<char> {
         if self.cchar == 0 {
             if self.cline != 0 {
                 let old_line = self.contents[self.cline].clone();
@@ -128,9 +128,9 @@ impl Buffer {
                 self.cchar = old_len;
                 self.has_unsaved_changes = true;
                 self.adjust_top();
-                Ok('\n')
+                Some('\n')
             } else {
-                Err(())
+                None
             }
         } else if self.cchar == self.contents[self.cline].chars().count() {
             // This is an optimisation.
@@ -140,18 +140,18 @@ impl Buffer {
             self.cchar -= 1;
             self.has_unsaved_changes = true;
             self.adjust_top();
-            Ok(c)
+            Some(c)
         } else {
             let old_line = self.contents[self.cline].clone();
             self.contents[self.cline].clear();
-            let mut removed: Result<char, ()> = Err(());
+            let mut removed: Option<char> = None;
             for (i, c) in old_line.chars().enumerate() {
                 if i + 1 != self.cchar {
                     self.contents[self.cline].push(c);
                 } else {
                     self.has_unsaved_changes = true;
                     self.adjust_top();
-                    removed = Ok(c);
+                    removed = Some(c);
                 }
             }
             self.cchar -= 1;
@@ -189,6 +189,13 @@ impl Buffer {
             self.adjust_top();
             self.has_unsaved_changes = true;
             return;
+        } else if matches!(
+            self.contents[self.cline].chars().last(),
+            Some('(' | '[' | '{')
+        ) {
+            let indent_unit = " ".repeat(4);
+            newline.insert_str(0, &indent_unit);
+            self.indent_level += 1;
         }
         self.contents.insert(self.cline + 1, newline);
         self.cline += 1;
@@ -264,12 +271,12 @@ impl Buffer {
     // Ok(true) indicates successful saving.
     // Ok(false) indicates no errors, but unsuccessful saving.
     // Err indicates fs::write has failed.
-    pub fn save(&mut self) -> Result<bool, ()> {
+    pub fn save(&mut self) -> Option<bool> {
         if !self.has_unsaved_changes {
-            return Ok(false);
+            return Some(false);
         }
         if self.filepath.starts_with('*') {
-            return Ok(false);
+            return Some(false);
         }
         let mut write_contents = self
             .contents
@@ -287,9 +294,9 @@ impl Buffer {
         if self.content_history.len() > 64 {
             _ = self.content_history.remove(0);
         }
-        fs::write(&self.filepath, write_contents).map_err(|_| {})?;
+        fs::write(&self.filepath, write_contents).ok()?;
         self.has_unsaved_changes = false;
-        Ok(true)
+        Some(true)
     }
 
     pub fn undo(&mut self) -> bool {
@@ -342,7 +349,7 @@ impl Buffer {
     where
         P: FnMut(&char) -> bool,
     {
-        while let Ok(lc) = self.backspace() {
+        while let Some(lc) = self.backspace() {
             if !pred(&lc) {
                 if lc == '\n' {
                     self.enter();
@@ -826,7 +833,7 @@ fn main() {
                             break 'ed;
                         }
                         "w" | "write" => {
-                            if buf.save() == Ok(true) {
+                            if buf.save() == Some(true) {
                                 new_alert(
                                     &mut alert,
                                     &mut alert_spawn_instant,
@@ -834,6 +841,14 @@ fn main() {
                                     &[String::from("save")],
                                     time::Duration::from_secs(1),
                                 );
+                            }
+                        }
+                        "n" | "next" => {
+                            action = EDAction::SetBufferHead(buffer_head + 1);
+                        }
+                        "p" | "previous" => {
+                            if buffer_head != 0 {
+                                action = EDAction::SetBufferHead(buffer_head - 1);
                             }
                         }
                         _ => {
@@ -855,6 +870,7 @@ fn main() {
                 }
                 _ => {}
             },
+
             Mode::Default(DefaultState::Till) => match key.code {
                 KeyCode::Char(n) => {
                     repeat_action!(temp_str, {
@@ -866,6 +882,7 @@ fn main() {
                     temp_str.clear();
                 }
             },
+
             Mode::Default(DefaultState::TillBack) => match key.code {
                 KeyCode::Char(n) => {
                     repeat_action!(temp_str, {
@@ -877,6 +894,7 @@ fn main() {
                     temp_str.clear();
                 }
             },
+
             Mode::Default(_) => match modifier {
                 Modifiers::None | Modifiers::Shift => match key.code {
                     KeyCode::Char('c') => {
@@ -951,6 +969,34 @@ fn main() {
                             _ = buf.seek_backward_until(|c| c.is_whitespace());
                         });
                     }
+                    KeyCode::Char('u') => {
+                        repeat_action!(temp_str, {
+                            if !buf.undo() {
+                                new_alert(
+                                    &mut alert,
+                                    &mut alert_spawn_instant,
+                                    &mut alert_timeout,
+                                    &[String::from("already at oldest change")],
+                                    time::Duration::from_secs(1),
+                                );
+                            }
+                        });
+                    }
+                    KeyCode::Char('o') => {
+                        repeat_action!(temp_str, {
+                            buf.end();
+                            buf.enter();
+                        });
+                        mode = Mode::Insert;
+                    }
+                    KeyCode::Char('O') => {
+                        repeat_action!(temp_str, {
+                            _ = buf.home_nonwhitespace();
+                            buf.enter();
+                            _ = buf.move_up();
+                        });
+                        mode = Mode::Insert;
+                    }
                     _ => {}
                 },
                 _ => {}
@@ -1007,7 +1053,7 @@ fn main() {
                         _ = buf.move_right();
                     }
                     KeyCode::Char('s') => {
-                        if buf.save() == Ok(true) {
+                        if buf.save() == Some(true) {
                             new_alert(
                                 &mut alert,
                                 &mut alert_spawn_instant,
