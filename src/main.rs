@@ -90,6 +90,37 @@ impl Buffer {
             has_unsaved_changes: false,
         }
     }
+
+    pub fn reload_file(&mut self) -> bool {
+        let contents_raw_u = fs::read_to_string(&self.filepath);
+        if contents_raw_u.is_err() {
+            return false;
+        }
+        let contents_raw = contents_raw_u.unwrap();
+        let mut write_contents = self
+            .contents
+            .iter()
+            .map(|s| s.trim_end())
+            .fold(String::new(), |a, b| a + b + "\n");
+        _ = write_contents.pop();
+        self.content_history.push(ContentHistory {
+            data: write_contents.clone(),
+            cchar: self.cchar,
+            cline: self.cline,
+            top: self.top,
+        });
+        if self.content_history.len() > 64 {
+            _ = self.content_history.remove(0);
+        }
+        self.contents = contents_raw
+            .split('\n')
+            .map(|line| line.trim_end())
+            .map(|line| line.to_string())
+            .collect();
+        self.ensure_cursor_inbound();
+        self.adjust_top();
+        true
+    }
 }
 
 impl Buffer {
@@ -470,8 +501,6 @@ impl Buffer {
     }
 }
 
-// xxx
-
 #[derive(PartialEq, Copy, Clone)]
 pub enum DefaultState {
     Normal,
@@ -851,6 +880,11 @@ fn main() {
                                 action = EDAction::SetBufferHead(buffer_head - 1);
                             }
                         }
+                        "rl" | "reload_file" => {
+                            if buf.reload_file() {
+                                print!("\x1bc\x1b[?25l");
+                            }
+                        }
                         _ => {
                             new_alert(
                                 &mut alert,
@@ -946,10 +980,14 @@ fn main() {
                         temp_str.push(':');
                     }
                     KeyCode::Char(']') => {
-                        buf.find_empty_line_forward();
+                        repeat_action!(temp_str, {
+                            buf.find_empty_line_forward();
+                        });
                     }
                     KeyCode::Char('[') => {
-                        buf.find_empty_line_backward();
+                        repeat_action!(temp_str, {
+                            buf.find_empty_line_backward();
+                        });
                     }
                     KeyCode::Char('g') => {
                         buf.cline = temp_str.parse::<usize>().unwrap_or(0);
