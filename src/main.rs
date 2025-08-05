@@ -57,7 +57,7 @@ impl Buffer {
             filepath: filepath.to_string(),
             contents: contents_raw
                 .split('\n')
-                .map(|line| line.trim())
+                .map(|line| line.trim_end())
                 .map(|line| line.to_string())
                 .collect(),
             content_history: vec![ContentHistory {
@@ -160,7 +160,12 @@ impl Buffer {
     }
 
     pub fn enter(&mut self) {
+        self.determine_indent();
         let mut newline = String::new();
+        // PHASE2: Change this `4` to something based on language.
+        for _ in 0..(self.indent_level * 4) {
+            newline.push(' ');
+        }
         let mut deleted = 0;
         for (idx, c) in self.contents[self.cline].chars().enumerate() {
             if idx >= self.cchar {
@@ -168,12 +173,26 @@ impl Buffer {
                 deleted += 1;
             }
         }
+        let mut fc = Some(' ');
         for _ in 0..deleted {
-            _ = self.contents[self.cline].pop();
+            fc = self.contents[self.cline].pop();
+        }
+        if matches!(fc, Some(')' | ']' | '}')) {
+            let mut empty_line = String::new();
+            for _ in 0..((self.indent_level + 1) * 4) {
+                empty_line.push(' ');
+            }
+            self.contents.insert(self.cline + 1, empty_line);
+            self.contents.insert(self.cline + 2, newline);
+            self.cline += 1;
+            self.cchar = self.indent_level * 4 + 4;
+            self.adjust_top();
+            self.has_unsaved_changes = true;
+            return;
         }
         self.contents.insert(self.cline + 1, newline);
         self.cline += 1;
-        self.cchar = 0;
+        self.cchar = self.indent_level * 4;
         self.adjust_top();
         self.has_unsaved_changes = true;
     }
@@ -255,7 +274,7 @@ impl Buffer {
         let mut write_contents = self
             .contents
             .iter()
-            .map(|s| s.trim())
+            .map(|s| s.trim_end())
             .fold(String::new(), |a, b| a + b + "\n");
         _ = write_contents.pop();
         self.content_history.push(ContentHistory {
@@ -278,7 +297,7 @@ impl Buffer {
             self.contents = prev
                 .data
                 .split('\n')
-                .map(|line| line.trim())
+                .map(|line| line.trim_end())
                 .map(|line| line.to_string())
                 .collect();
             self.cline = prev.cline;
@@ -289,7 +308,7 @@ impl Buffer {
             let mut write_contents = self
                 .contents
                 .iter()
-                .map(|s| s.trim())
+                .map(|s| s.trim_end())
                 .fold(String::new(), |a, b| a + b + "\n");
             _ = write_contents.pop();
             self.content_history.push(ContentHistory {
@@ -355,6 +374,7 @@ impl Buffer {
             if let Some(p) = line.chars().position(&mut pred) {
                 self.cline = ctr;
                 self.cchar = p;
+                self.adjust_top();
                 return true;
             }
             ctr += 1;
@@ -385,6 +405,7 @@ impl Buffer {
             if let Some(p) = chars.position(&mut pred) {
                 self.cline = ctr;
                 self.cchar = p;
+                self.adjust_top();
                 return true;
             }
             ctr -= 1;
@@ -393,18 +414,51 @@ impl Buffer {
     }
 
     pub fn adjust_top(&mut self) {
-        let (_, terminal_height_u16) =
-            terminal::size().expect("Terminal should have a size");
+        let (_, terminal_height_u16) = terminal::size().expect("Terminal should have a size");
         let terminal_height = terminal_height_u16 as usize;
         let padding_size = 3;
         let bottom_rows = 2;
         if self.cline < self.top + padding_size {
             self.top = self.cline.saturating_sub(padding_size);
         }
-        if self.cline > (self.top + terminal_height)
-            .saturating_sub(padding_size + bottom_rows) {
-            self.top = self.cline.saturating_sub(
-                terminal_height.saturating_sub(padding_size + bottom_rows))
+        if self.cline > (self.top + terminal_height).saturating_sub(padding_size + bottom_rows) {
+            self.top = self
+                .cline
+                .saturating_sub(terminal_height.saturating_sub(padding_size + bottom_rows))
+        }
+    }
+
+    pub fn determine_indent(&mut self) {
+        // PHASE2: get size of indent with language.
+        self.indent_level = self.contents[self.cline]
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .count()
+            / 4;
+    }
+
+    pub fn find_empty_line_forward(&mut self) {
+        let mut lines = self.contents.iter();
+        for _ in 0..self.cline + 1 {
+            _ = lines.next();
+        }
+        if let Some(l) = lines.position(|l| l.trim().is_empty()) {
+            self.cline += l + 1;
+            self.ensure_cursor_inbound();
+            self.adjust_top();
+        }
+    }
+
+    pub fn find_empty_line_backward(&mut self) {
+        if let Some(l) = self
+            .contents
+            .iter()
+            .take(self.cline.saturating_sub(1))
+            .rposition(|l| l.trim().is_empty())
+        {
+            self.cline = l;
+            self.ensure_cursor_inbound();
+            self.adjust_top();
         }
     }
 }
@@ -580,14 +634,6 @@ fn main() {
                         a if a == buf.cchar => {
                             _ = write!(&mut outbuf, "\x1b[47m\x1b[30m{ch}\x1b[0m",);
                         }
-                        // PHASE2: change the `4` to indent size.
-                        b if b == buf.indent_level * 4 => {
-                            if ch.is_whitespace() {
-                                _ = write!(&mut outbuf, "\x1b[2;33m|\x1b[0m",);
-                            } else {
-                                _ = write!(&mut outbuf, "\x1b[33m{ch}\x1b[0m",);
-                            }
-                        }
                         _ => {
                             outbuf.push(ch);
                         }
@@ -599,10 +645,6 @@ fn main() {
                     match idx {
                         a if a == buf.cchar => {
                             _ = write!(&mut outbuf, "\x1b[47m\x1b[30m \x1b[0m",);
-                        }
-                        // PHASE2: change the `4` to indent size.
-                        b if b == buf.indent_level * 4 => {
-                            _ = write!(&mut outbuf, "\x1b[2;33m|\x1b[0m",);
                         }
                         _ => {
                             outbuf.push(' ');
@@ -778,12 +820,21 @@ fn main() {
                     let args = tsi.collect::<String>();
                     match cmd.trim() {
                         "o" | "open" => {
-                            action = EDAction::OpenFile(
-                                args.trim().to_string()
-                            );
+                            action = EDAction::OpenFile(args.trim().to_string());
                         }
                         "q" | "quit" => {
                             break 'ed;
+                        }
+                        "w" | "write" => {
+                            if buf.save() == Ok(true) {
+                                new_alert(
+                                    &mut alert,
+                                    &mut alert_spawn_instant,
+                                    &mut alert_timeout,
+                                    &[String::from("save")],
+                                    time::Duration::from_secs(1),
+                                );
+                            }
                         }
                         _ => {
                             new_alert(
@@ -875,6 +926,30 @@ fn main() {
                     KeyCode::Char(':') => {
                         mode = Mode::Default(DefaultState::Command);
                         temp_str.push(':');
+                    }
+                    KeyCode::Char(']') => {
+                        buf.find_empty_line_forward();
+                    }
+                    KeyCode::Char('[') => {
+                        buf.find_empty_line_backward();
+                    }
+                    KeyCode::Char('g') => {
+                        buf.cline = temp_str.parse::<usize>().unwrap_or(0);
+                        buf.ensure_cursor_inbound();
+                        buf.adjust_top();
+                        temp_str.clear();
+                    }
+                    KeyCode::Char('w') => {
+                        repeat_action!(temp_str, {
+                            _ = buf.seek_forward_until(|c| c.is_whitespace());
+                            _ = buf.seek_forward_until(|c| !c.is_whitespace());
+                        });
+                    }
+                    KeyCode::Char('b') => {
+                        repeat_action!(temp_str, {
+                            _ = buf.seek_backward_until(|c| !c.is_whitespace());
+                            _ = buf.seek_backward_until(|c| c.is_whitespace());
+                        });
                     }
                     _ => {}
                 },
@@ -981,9 +1056,7 @@ fn main() {
             EDAction::None => {}
             EDAction::OpenFile(path) => match Buffer::new(&path) {
                 Ok(b) => {
-                    if let Some(pos) = buffers.iter().position(|s|
-                        s.filepath == path
-                    ) {
+                    if let Some(pos) = buffers.iter().position(|s| s.filepath == path) {
                         buffer_head = pos;
                     } else {
                         buffers.insert(buffer_head + 1, b);
