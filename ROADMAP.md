@@ -64,7 +64,7 @@ This is the point at which I would probably switch over to cim.
 
 This phase will include features such as:
 
-- [ ] Selections and registers
+- [X] Selections and registers
 - [ ] Syntax highlighting
 - [ ] Autocomplete
 - [ ] Basic shell interaction (running shell commands)

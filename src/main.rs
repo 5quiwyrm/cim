@@ -32,9 +32,13 @@ live in the event loop.
 */
 
 pub struct ContentHistory {
+
+
     data: String,
     cchar: usize,
     cline: usize,
+    ecchar: usize,
+    ecline: usize,
     top: usize,
 }
 
@@ -44,6 +48,8 @@ pub struct Buffer {
     content_history: Vec<ContentHistory>, // TODO: use a static size struture
     cline: usize,
     cchar: usize,
+    ecline: usize,
+    ecchar: usize,
     indent_level: usize,
     top: usize,
     has_unsaved_changes: bool,
@@ -64,10 +70,14 @@ impl Buffer {
                 data: contents_raw.clone(),
                 cchar: 0,
                 cline: 0,
+                ecline: 0,
+                ecchar: 1,
                 top: 0,
             }],
             cline: 0,
             cchar: 0,
+            ecline: 0,
+            ecchar: 1,
             indent_level: 0,
             top: 0,
             has_unsaved_changes: false,
@@ -81,10 +91,14 @@ impl Buffer {
                 data: String::new(),
                 cchar: 0,
                 cline: 0,
+                ecline: 0,
+                ecchar: 1,
                 top: 0,
             }],
             cline: 0,
             cchar: 0,
+            ecline: 0,
+            ecchar: 1,
             indent_level: 0,
             top: 0,
             has_unsaved_changes: false,
@@ -107,6 +121,8 @@ impl Buffer {
             data: write_contents.clone(),
             cchar: self.cchar,
             cline: self.cline,
+            ecline: self.ecline,
+            ecchar: self.ecchar,
             top: self.top,
         });
         if self.content_history.len() > 64 {
@@ -140,6 +156,7 @@ impl Buffer {
             curr_line.push(ch);
         }
         self.cchar += 1;
+        self.make_selection_cursor();
         self.has_unsaved_changes = true;
         Some(())
     }
@@ -158,6 +175,7 @@ impl Buffer {
                 self.cline -= 1;
                 self.cchar = old_len;
                 self.has_unsaved_changes = true;
+                self.make_selection_cursor();
                 self.adjust_top();
                 Some('\n')
             } else {
@@ -169,6 +187,7 @@ impl Buffer {
                 .pop()
                 .expect("unreachable: len should not be 0");
             self.cchar -= 1;
+            self.make_selection_cursor();
             self.has_unsaved_changes = true;
             self.adjust_top();
             Some(c)
@@ -186,6 +205,7 @@ impl Buffer {
                 }
             }
             self.cchar -= 1;
+            self.make_selection_cursor();
             removed
         }
     }
@@ -218,6 +238,7 @@ impl Buffer {
             self.cline += 1;
             self.cchar = self.indent_level * 4 + 4;
             self.adjust_top();
+            self.make_selection_cursor();
             self.has_unsaved_changes = true;
             return;
         } else if matches!(
@@ -232,6 +253,7 @@ impl Buffer {
         self.cline += 1;
         self.cchar = self.indent_level * 4;
         self.adjust_top();
+        self.make_selection_cursor();
         self.has_unsaved_changes = true;
     }
 
@@ -246,12 +268,31 @@ impl Buffer {
         true
     }
 
+    pub fn extend_up(&mut self) -> bool {
+        if self.ecline == 0 {
+            false
+        } else {
+            self.ecline -= 1;
+            self.ensure_selection_end_inbound();
+            true
+        }
+    }
+
     pub fn ensure_cursor_inbound(&mut self) {
         if self.cline >= self.contents.len() {
             self.cline = self.contents.len() - 1;
         }
         let curr_line_len = self.contents[self.cline].chars().count();
         self.cchar = std::cmp::min(self.cchar, curr_line_len);
+        self.make_selection_cursor();
+    }
+
+    pub fn ensure_selection_end_inbound(&mut self) {
+        if self.ecline >= self.contents.len() {
+            self.ecline = self.contents.len() - 1;
+        }
+        let curr_line_len = self.contents[self.ecline].chars().count();
+        self.ecchar = std::cmp::min(self.ecchar, curr_line_len);
     }
 
     pub fn move_down(&mut self) -> bool {
@@ -260,7 +301,17 @@ impl Buffer {
         }
         self.cline += 1;
         self.adjust_top();
+        self.make_selection_cursor();
         self.ensure_cursor_inbound();
+        true
+    }
+
+    pub fn extend_down(&mut self) -> bool {
+        if self.ecline + 1 == self.contents.len() {
+            return false;
+        }
+        self.ecline += 1;
+        self.ensure_selection_end_inbound();
         true
     }
 
@@ -270,6 +321,8 @@ impl Buffer {
                 self.cline -= 1;
                 self.cchar = self.contents[self.cline].chars().count();
                 self.adjust_top();
+                self.make_selection_cursor();
+                self.ensure_selection_end_inbound();
                 true
             } else {
                 false
@@ -277,6 +330,25 @@ impl Buffer {
         } else {
             self.cchar -= 1;
             self.adjust_top();
+            self.make_selection_cursor();
+            self.ensure_selection_end_inbound();
+            true
+        }
+    }
+
+    pub fn extend_left(&mut self) -> bool {
+        if self.ecchar == 0 {
+            if self.ecline != 0 {
+                self.ecline -= 1;
+                self.ecchar = self.contents[self.ecline].chars().count();
+                self.ensure_selection_end_inbound();
+                true
+            } else {
+                false
+            }
+        } else {
+            self.ecchar -= 1;
+            self.ensure_selection_end_inbound();
             true
         }
     }
@@ -287,6 +359,7 @@ impl Buffer {
                 self.cchar = 0;
                 self.cline += 1;
                 self.adjust_top();
+                self.make_selection_cursor();
                 true
             } else {
                 false
@@ -294,6 +367,24 @@ impl Buffer {
         } else {
             self.cchar += 1;
             self.adjust_top();
+            self.make_selection_cursor();
+            true
+        }
+    }
+
+    pub fn extend_right(&mut self) -> bool {
+        if self.ecchar == self.contents[self.ecline].chars().count() {
+            if self.ecline + 1 != self.contents.len() {
+                self.ecchar = 0;
+                self.ecline += 1;
+                self.ensure_selection_end_inbound();
+                true
+            } else {
+                false
+            }
+        } else {
+            self.ecchar += 1;
+            self.ensure_selection_end_inbound();
             true
         }
     }
@@ -319,6 +410,8 @@ impl Buffer {
             data: write_contents.clone(),
             cchar: self.cchar,
             cline: self.cline,
+            ecchar: self.ecchar,
+            ecline: self.ecline,
             top: self.top,
         });
         // PHASE3: this `64` is subject to change
@@ -340,6 +433,8 @@ impl Buffer {
                 .collect();
             self.cline = prev.cline;
             self.cchar = prev.cchar;
+            self.ecline = prev.ecline;
+            self.ecchar = prev.ecchar;
             self.top = prev.top;
             true
         } else {
@@ -353,6 +448,8 @@ impl Buffer {
                 data: write_contents.clone(),
                 cchar: self.cchar,
                 cline: self.cline,
+                ecline: self.ecline,
+                ecchar: self.ecchar,
                 top: self.top,
             });
             false
@@ -372,6 +469,7 @@ impl Buffer {
     }
 
     pub fn end(&mut self) {
+        self.ecchar = self.cchar;
         self.cchar = self.contents[self.cline].chars().count();
     }
 
@@ -396,6 +494,8 @@ impl Buffer {
     where
         P: FnMut(char) -> bool,
     {
+        self.ecchar = self.cchar;
+        self.ecline = self.cline;
         let mut curr_line = self.contents[self.cline].chars();
         for _ in 0..(self.cchar + 1) {
             _ = curr_line.next();
@@ -424,6 +524,8 @@ impl Buffer {
     where
         P: FnMut(char) -> bool,
     {
+        self.ecchar = self.cchar;
+        self.ecline = self.cline;
         let mut curr_line = self.contents[self.cline].chars().rev();
         let clen = curr_line.clone().count();
         for _ in self.cchar..clen {
@@ -498,6 +600,176 @@ impl Buffer {
             self.ensure_cursor_inbound();
             self.adjust_top();
         }
+    }
+
+    pub fn delete_selection(&mut self) {
+        let (cline, ecline) = if self.cline > self.ecline {
+            (self.ecline, self.cline)
+        } else {
+            (self.cline, self.ecline)
+        };
+        let (cchar, ecchar) = if self.cline == self.ecline
+            && self.cchar > self.ecchar {
+            (self.ecchar, self.cchar)
+        } else {
+            (self.cchar, self.ecchar)
+        };
+        for (lnumberr, line) in self.contents[cline..(ecline + 1)]
+            .iter_mut()
+            .enumerate()
+        {
+            let lnumber = lnumberr + cline;
+            if lnumber == cline && cline == ecline {
+                let old_line = line.clone();
+                line.clear();
+                for (i, c) in old_line.chars().enumerate() {
+                    if !(i < ecchar && i >= cchar) {
+                        line.push(c);
+                    }
+                }
+                if line.is_empty() {
+                    line.push_str("DELETE ME NOW!! nshtm;cgaei")
+                }
+            } else if lnumber == cline {
+                let old_line = line.clone();
+                line.clear();
+                for (i, c) in old_line.chars().enumerate() {
+                    if i < cchar {
+                        line.push(c);
+                    } else {
+                        break;
+                    }
+                }
+                if line.is_empty() {
+                    line.push_str("DELETE ME NOW!! nshtm;cgaei");
+                }
+            } else if lnumber == ecline {
+                let old_line = line.clone();
+                line.clear();
+                for (i, c) in old_line.chars().enumerate() {
+                    if i >= ecchar {
+                        line.push(c)
+                    }
+                }
+                if line.is_empty() {
+                    line.push_str("DELETE ME NOW!! nshtm;cgaei");
+                }
+            } else {
+                *line = String::from("DELETE ME NOW!! nshtm;cgaei")
+            }
+        }
+        let mut new_contents: Vec<String> = self.contents
+            .iter()
+            .filter(|s| **s != "DELETE ME NOW!! nshtm;cgaei")
+            .cloned()
+            .collect();
+        self.contents.clear();
+        self.cline = cline;
+        self.cchar = cchar;
+        self.contents.append(&mut new_contents);
+        self.ensure_cursor_inbound();
+        self.adjust_top();
+        self.has_unsaved_changes = true;
+    }
+
+    pub fn is_within_selection(&self, line: usize, idx: usize) -> bool {
+        let (cline, ecline, cchar, ecchar) = if self.cline > self.ecline {
+            (self.ecline, self.cline, self.ecchar, self.cchar)
+        } else if self.cline == self.ecline {
+            if self.cchar > self.ecchar {
+                (self.ecline, self.cline, self.ecchar, self.cchar)
+            } else {
+                (self.cline, self.ecline, self.cchar, self.ecchar)
+            }
+        } else {
+            (self.cline, self.ecline, self.cchar, self.ecchar)
+        };
+        if line > cline {
+            if line < ecline {
+                true
+            } else if line == ecline {
+                idx < ecchar
+            } else {
+                false
+            }
+        } else if line == cline && cline == ecline {
+            idx >= cchar && idx < ecchar
+        } else if line == cline {
+            idx >= cchar
+        } else {
+            false
+        }
+    }
+
+    pub fn make_selection_cursor(&mut self) {
+        self.ecline = self.cline;
+        self.ecchar = self.cchar + 1;
+    }
+
+    pub fn type_string(&mut self, source: &str) {
+        let mut ln = 0;
+        for ch in source.chars() {
+            if ch == '\n' {
+                ln += 1;
+                self.contents.insert(self.cchar + ln, String::new());
+            } else {
+                _ = self.type_char(ch);
+            }
+        }
+        self.has_unsaved_changes = true;
+    }
+
+    pub fn yank_selection(&mut self, dest: &mut String) {
+        let (cline, ecline, cchar, ecchar) = if self.cline > self.ecline {
+            (self.ecline, self.cline, self.ecchar, self.cchar)
+        } else if self.cline == self.ecline {
+            if self.cchar > self.ecchar {
+                (self.ecline, self.cline, self.ecchar, self.cchar)
+            } else {
+                (self.cline, self.ecline, self.cchar, self.ecchar)
+            }
+        } else {
+            (self.cline, self.ecline, self.cchar, self.ecchar)
+        };
+        for (lnumberr, line) in self.contents[cline..(ecline + 1)]
+            .iter().enumerate() {
+            let lnumber = lnumberr + cline;
+            if lnumber == cline && cline == ecline {
+                for (i, c) in line.chars().enumerate() {
+                    if i >= cchar {
+                        if i < ecchar {
+                            dest.push(c);
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            } else if lnumber == cline {
+                for (i, c) in line.chars().enumerate() {
+                    if i >= cchar {
+                        dest.push(c)
+                    } else {
+                        break;
+                    }
+                }
+            } else if lnumber == ecline {
+                for c in line.chars().take(ecchar.saturating_sub(1)) {
+                    dest.push(c);
+                }
+            } else {
+                dest.push_str(line.clone().as_str());
+            }
+            dest.push('\n')
+        }
+    }
+
+    pub fn flip_selection_ends(&mut self) {
+        (self.cline, self.ecline, self.cchar, self.ecchar) = (
+            self.ecline,
+            self.cline,
+            self.ecchar.saturating_sub(1),
+            self.cchar,
+        );
     }
 }
 
@@ -595,6 +867,7 @@ fn main() {
     let mut alert_spawn_instant: time::Instant = time::Instant::now();
     let mut alert_timeout: time::Duration = time::Duration::from_secs(10);
     let mut temp_str = String::new();
+    let mut clipboard = String::new();
 
     let mut args = args().peekable();
     _ = args.next();
@@ -637,6 +910,15 @@ fn main() {
         let terminal_width = terminal_width_u16 as usize;
         let terminal_height = terminal_height_u16 as usize;
 
+        /*
+        if buf.cline > buf.ecline {
+            (buf.cline, buf.ecline) = (buf.ecline, buf.cline);
+        }
+        if buf.cchar > buf.ecchar && buf.cline == buf.ecline {
+            (buf.cchar, buf.ecchar) = (buf.ecchar, buf.cchar);
+        }
+        */
+
         print!("\x1b[J\x1b[H");
         if alert_spawn_instant.elapsed() >= alert_timeout {
             alert.clear();
@@ -660,51 +942,52 @@ fn main() {
                     "\x1b[36m{:>linenumwidth$}  \x1b[0m",
                     buf.top + lnumber + 1
                 );
-                let mut idx = 0;
-                'ln: for ch in line.chars() {
-                    width_printed += ch.width_cjk().unwrap_or(0);
-                    if width_printed > terminal_width {
-                        break 'ln;
-                    }
-                    match idx {
-                        a if a == buf.cchar => {
-                            _ = write!(&mut outbuf, "\x1b[47m\x1b[30m{ch}\x1b[0m",);
-                        }
-                        _ => {
-                            outbuf.push(ch);
-                        }
-                    }
-                    idx += 1;
-                }
-                while width_printed < terminal_width {
-                    width_printed += 1;
-                    match idx {
-                        a if a == buf.cchar => {
-                            _ = write!(&mut outbuf, "\x1b[47m\x1b[30m \x1b[0m",);
-                        }
-                        _ => {
-                            outbuf.push(' ');
-                        }
-                    }
-                    idx += 1;
-                }
             } else {
                 _ = write!(
                     &mut outbuf,
                     "\x1b[2m\x1b[36m{:>linenumwidth$}  \x1b[0m",
                     (lnumber + buf.top).abs_diff(buf.cline),
                 );
-                'ln: for ch in line.chars() {
-                    width_printed += ch.width_cjk().unwrap_or(0);
-                    if width_printed > terminal_width {
-                        break 'ln;
-                    }
-                    outbuf.push(ch);
+            }
+            let mut idx = 0;
+            'ln: for ch in line.chars() {
+                width_printed += ch.width_cjk().unwrap_or(0);
+                if width_printed > terminal_width {
+                    break 'ln;
                 }
+                match idx {
+                    a if a == buf.cchar && lnumber + buf.top == buf.cline => {
+                        _ = write!(&mut outbuf, "\x1b[43m\x1b[30m{ch}\x1b[0m");
+                    }
+                    b if b == buf.ecchar && lnumber + buf.top == buf.ecline => {
+                        _ = write!(&mut outbuf, "\x1b[4m{ch}\x1b[0m");
+                    }
+                    _ if buf.is_within_selection(lnumber + buf.top, idx) => {
+                        _ = write!(&mut outbuf, "\x1b[47m\x1b[30m{ch}\x1b[0m");
+                    }
+                    _ => {
+                        outbuf.push(ch);
+                    }
+                }
+                idx += 1;
             }
             while width_printed < terminal_width {
                 width_printed += 1;
-                outbuf.push(' ');
+                match idx {
+                    a if a == buf.cchar && lnumber + buf.top == buf.cline => {
+                        _ = write!(&mut outbuf, "\x1b[43m\x1b[30m \x1b[0m");
+                    }
+                    b if b == buf.ecchar && lnumber + buf.top == buf.ecline => {
+                        _ = write!(&mut outbuf, "\x1b[4m \x1b[0m");
+                    }
+                    _ if buf.is_within_selection(lnumber + buf.top, idx) => {
+                        _ = write!(&mut outbuf, "\x1b[47m\x1b[30m \x1b[0m");
+                    }
+                    _ => {
+                        outbuf.push(' ');
+                    }
+                }
+                idx += 1;
             }
             outbuf.push('\n');
         }
@@ -854,6 +1137,7 @@ fn main() {
                         }
                     }
                     let args = tsi.collect::<String>();
+
                     match cmd.trim() {
                         "o" | "open" => {
                             action = EDAction::OpenFile(args.trim().to_string());
@@ -861,7 +1145,7 @@ fn main() {
                         "q" | "quit" => {
                             break 'ed;
                         }
-                        "w" | "write" => {
+                        "s" | "save" => {
                             if buf.save() == Some(true) {
                                 new_alert(
                                     &mut alert,
@@ -951,7 +1235,27 @@ fn main() {
                             _ = buf.move_right();
                         });
                     }
+                    KeyCode::Char('C') => {
+                        repeat_action!(temp_str, {
+                            _ = buf.extend_left();
+                        });
+                    }
+                    KeyCode::Char('A') => {
+                        repeat_action!(temp_str, {
+                            _ = buf.extend_down();
+                        });
+                    }
+                    KeyCode::Char('E') => {
+                        repeat_action!(temp_str, {
+                            _ = buf.extend_up();
+                        });
+                    }
                     KeyCode::Char('I') => {
+                        repeat_action!(temp_str, {
+                            _ = buf.extend_right();
+                        });
+                    }
+                    KeyCode::Char('q') => {
                         mode = Mode::Insert;
                     }
                     KeyCode::Home => {
@@ -1034,6 +1338,40 @@ fn main() {
                             _ = buf.move_up();
                         });
                         mode = Mode::Insert;
+                    }
+                    KeyCode::Char('D') => {
+                        temp_str.clear();
+                        buf.delete_selection();
+                        mode = Mode::Insert;
+                    }
+                    KeyCode::Char('d') => {
+                        temp_str.clear();
+                        buf.delete_selection();
+                    }
+                    KeyCode::Char(';') => {
+                        temp_str.clear();
+                        buf.make_selection_cursor();
+                    }
+                    KeyCode::Char('y') => {
+                        buf.yank_selection(&mut clipboard);
+                    }
+                    KeyCode::Char('p') => {
+                        repeat_action!(temp_str, {
+                            buf.type_string(&clipboard);
+                        });
+                        clipboard.clear();
+                    }
+                    KeyCode::Char('x') => {
+                        repeat_action!(temp_str, {
+                            buf.cchar = 0;
+                            buf.ecchar = 0;
+                            buf.ecline += 1;
+                            buf.ensure_selection_end_inbound();
+                        });
+                    }
+                    KeyCode::Char(',') => {
+                        buf.flip_selection_ends();
+                        temp_str.clear();
                     }
                     _ => {}
                 },
