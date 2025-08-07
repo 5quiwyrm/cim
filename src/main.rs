@@ -26,14 +26,12 @@ Locally owned qualities of a buffer:
 - cursor position
 - indent level
 
-Everything else you could possibly think of that we only need 1 copy of will
+Everything other you could possibly think of that we only need 1 copy of will
 live in the event loop.
 
 */
 
 pub struct ContentHistory {
-
-
     data: String,
     cchar: usize,
     cline: usize,
@@ -71,13 +69,13 @@ impl Buffer {
                 cchar: 0,
                 cline: 0,
                 ecline: 0,
-                ecchar: 1,
+                ecchar: 0,
                 top: 0,
             }],
             cline: 0,
             cchar: 0,
             ecline: 0,
-            ecchar: 1,
+            ecchar: 0,
             indent_level: 0,
             top: 0,
             has_unsaved_changes: false,
@@ -92,13 +90,13 @@ impl Buffer {
                 cchar: 0,
                 cline: 0,
                 ecline: 0,
-                ecchar: 1,
+                ecchar: 0,
                 top: 0,
             }],
             cline: 0,
             cchar: 0,
             ecline: 0,
-            ecchar: 1,
+            ecchar: 0,
             indent_level: 0,
             top: 0,
             has_unsaved_changes: false,
@@ -603,32 +601,31 @@ impl Buffer {
     }
 
     pub fn delete_selection(&mut self) {
-        let (cline, ecline) = if self.cline > self.ecline {
-            (self.ecline, self.cline)
+        let (cline, ecline, cchar, ecchar) = if self.cline > self.ecline {
+            (self.ecline, self.cline, self.ecchar, self.cchar)
+        } else if self.cline == self.ecline {
+            if self.cchar > self.ecchar {
+                (self.ecline, self.cline, self.ecchar, self.cchar)
+            } else {
+                (self.cline, self.ecline, self.cchar, self.ecchar)
+            }
         } else {
-            (self.cline, self.ecline)
+            (self.cline, self.ecline, self.cchar, self.ecchar)
         };
-        let (cchar, ecchar) = if self.cline == self.ecline
-            && self.cchar > self.ecchar {
-            (self.ecchar, self.cchar)
-        } else {
-            (self.cchar, self.ecchar)
-        };
-        for (lnumberr, line) in self.contents[cline..(ecline + 1)]
-            .iter_mut()
-            .enumerate()
-        {
+        for (lnumberr, line) in self.contents[cline..(ecline + 1)].iter_mut().enumerate() {
             let lnumber = lnumberr + cline;
-            if lnumber == cline && cline == ecline {
+            if lnumber == cline && cline == ecline && line.is_empty() {
+                line.push_str("DELETE ME NOW!! nshtm;cgaei");
+            } else if lnumber == cline && cline == ecline
+                && cchar == 0 && ecchar == line.chars().count() {
+                *line = String::from("DELETE ME NOW!! nshtm;cgaei");
+            } else if lnumber == cline && cline == ecline {
                 let old_line = line.clone();
                 line.clear();
                 for (i, c) in old_line.chars().enumerate() {
-                    if !(i < ecchar && i >= cchar) {
+                    if !(i <= ecchar && i >= cchar) {
                         line.push(c);
                     }
-                }
-                if line.is_empty() {
-                    line.push_str("DELETE ME NOW!! nshtm;cgaei")
                 }
             } else if lnumber == cline {
                 let old_line = line.clone();
@@ -647,18 +644,16 @@ impl Buffer {
                 let old_line = line.clone();
                 line.clear();
                 for (i, c) in old_line.chars().enumerate() {
-                    if i >= ecchar {
+                    if i > ecchar {
                         line.push(c)
                     }
-                }
-                if line.is_empty() {
-                    line.push_str("DELETE ME NOW!! nshtm;cgaei");
                 }
             } else {
                 *line = String::from("DELETE ME NOW!! nshtm;cgaei")
             }
         }
-        let mut new_contents: Vec<String> = self.contents
+        let mut new_contents: Vec<String> = self
+            .contents
             .iter()
             .filter(|s| **s != "DELETE ME NOW!! nshtm;cgaei")
             .cloned()
@@ -688,12 +683,12 @@ impl Buffer {
             if line < ecline {
                 true
             } else if line == ecline {
-                idx < ecchar
+                idx <= ecchar
             } else {
                 false
             }
         } else if line == cline && cline == ecline {
-            idx >= cchar && idx < ecchar
+            idx >= cchar && idx <= ecchar
         } else if line == cline {
             idx >= cchar
         } else {
@@ -703,23 +698,25 @@ impl Buffer {
 
     pub fn make_selection_cursor(&mut self) {
         self.ecline = self.cline;
-        self.ecchar = self.cchar + 1;
+        self.ecchar = self.cchar;
     }
 
     pub fn type_string(&mut self, source: &str) {
-        let mut ln = 0;
         for ch in source.chars() {
             if ch == '\n' {
-                ln += 1;
-                self.contents.insert(self.cchar + ln, String::new());
+                self.contents.insert(self.cline + 1, String::new());
+                self.cline += 1;
             } else {
                 _ = self.type_char(ch);
             }
         }
+        self.ensure_cursor_inbound();
+        self.make_selection_cursor();
         self.has_unsaved_changes = true;
     }
 
     pub fn yank_selection(&mut self, dest: &mut String) {
+        dest.clear();
         let (cline, ecline, cchar, ecchar) = if self.cline > self.ecline {
             (self.ecline, self.cline, self.ecchar, self.cchar)
         } else if self.cline == self.ecline {
@@ -731,13 +728,12 @@ impl Buffer {
         } else {
             (self.cline, self.ecline, self.cchar, self.ecchar)
         };
-        for (lnumberr, line) in self.contents[cline..(ecline + 1)]
-            .iter().enumerate() {
+        for (lnumberr, line) in self.contents[cline..(ecline + 1)].iter().enumerate() {
             let lnumber = lnumberr + cline;
             if lnumber == cline && cline == ecline {
                 for (i, c) in line.chars().enumerate() {
                     if i >= cchar {
-                        if i < ecchar {
+                        if i <= ecchar {
                             dest.push(c);
                         } else {
                             break;
@@ -761,15 +757,12 @@ impl Buffer {
             }
             dest.push('\n')
         }
+        _ = dest.pop();
     }
 
     pub fn flip_selection_ends(&mut self) {
-        (self.cline, self.ecline, self.cchar, self.ecchar) = (
-            self.ecline,
-            self.cline,
-            self.ecchar.saturating_sub(1),
-            self.cchar,
-        );
+        (self.cline, self.ecline, self.cchar, self.ecchar) =
+            (self.ecline, self.cline, self.ecchar, self.cchar);
     }
 }
 
@@ -798,8 +791,8 @@ impl Mode {
 impl fmt::Display for Mode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         match self {
-            Mode::Default(_) => write!(f, "default"),
-            Mode::Insert => write!(f, "insert"),
+            Mode::Default(_) => write!(f, "DEFAULT"),
+            Mode::Insert => write!(f, "INSERT"),
         }
     }
 }
@@ -903,6 +896,7 @@ fn main() {
         if buffer_head >= buffers.len() {
             buffer_head = buffers.len().saturating_sub(1);
         }
+        let buffers_len = buffers.len();
         let buf = buffers.get_mut(buffer_head).unwrap();
 
         let (terminal_width_u16, terminal_height_u16) =
@@ -959,9 +953,6 @@ fn main() {
                     a if a == buf.cchar && lnumber + buf.top == buf.cline => {
                         _ = write!(&mut outbuf, "\x1b[43m\x1b[30m{ch}\x1b[0m");
                     }
-                    b if b == buf.ecchar && lnumber + buf.top == buf.ecline => {
-                        _ = write!(&mut outbuf, "\x1b[4m{ch}\x1b[0m");
-                    }
                     _ if buf.is_within_selection(lnumber + buf.top, idx) => {
                         _ = write!(&mut outbuf, "\x1b[47m\x1b[30m{ch}\x1b[0m");
                     }
@@ -976,9 +967,6 @@ fn main() {
                 match idx {
                     a if a == buf.cchar && lnumber + buf.top == buf.cline => {
                         _ = write!(&mut outbuf, "\x1b[43m\x1b[30m \x1b[0m");
-                    }
-                    b if b == buf.ecchar && lnumber + buf.top == buf.ecline => {
-                        _ = write!(&mut outbuf, "\x1b[4m \x1b[0m");
                     }
                     _ if buf.is_within_selection(lnumber + buf.top, idx) => {
                         _ = write!(&mut outbuf, "\x1b[47m\x1b[30m \x1b[0m");
@@ -1016,9 +1004,9 @@ fn main() {
             outbuf.push_str("\x1b[0m\n");
         }
         let bottom_bar = if buf.has_unsaved_changes {
-            format!("[{}*]", buf.filepath)
+            format!("[{}/{}: {}*]", buffer_head + 1, buffers_len, buf.filepath)
         } else {
-            format!("[{}]", buf.filepath)
+            format!("[{}/{}: {}]", buffer_head + 1, buffers_len, buf.filepath)
         };
         {
             let mut width_printed = 0;
@@ -1036,7 +1024,7 @@ fn main() {
             outbuf.push('\n');
         };
         let mode_bar = if mode.has_dialog() {
-            format!("{mode} :: {temp_str}")
+            format!("{mode} :: \x1b[4m{temp_str}\x1b[24m")
         } else {
             format!("{mode}")
         };
@@ -1152,6 +1140,19 @@ fn main() {
                                     &mut alert_spawn_instant,
                                     &mut alert_timeout,
                                     &[String::from("save")],
+                                    time::Duration::from_secs(1),
+                                );
+                            }
+                        }
+                        "sq" | "savequit" => {
+                            if buf.save().is_some() {
+                                break 'ed;
+                            } else {
+                                new_alert(
+                                    &mut alert,
+                                    &mut alert_spawn_instant,
+                                    &mut alert_timeout,
+                                    &[String::from("problem while saving, refusing to quit...")],
                                     time::Duration::from_secs(1),
                                 );
                             }
@@ -1279,7 +1280,7 @@ fn main() {
                         mode = Mode::Default(DefaultState::TillBack);
                         temp_str.push('T');
                     }
-                    KeyCode::Char(':') => {
+                    KeyCode::Char(':' | ' ') => {
                         mode = Mode::Default(DefaultState::Command);
                         temp_str.push(':');
                     }
@@ -1300,10 +1301,13 @@ fn main() {
                         temp_str.clear();
                     }
                     KeyCode::Char('w') => {
+                        let (prev_cline, prev_cchar) = (buf.cchar, buf.cline);
                         repeat_action!(temp_str, {
+                            _ = buf.seek_forward_until(|c| !c.is_whitespace());
                             _ = buf.seek_forward_until(|c| c.is_whitespace());
                             _ = buf.seek_forward_until(|c| !c.is_whitespace());
                         });
+                        (buf.ecchar, buf.ecline) = (prev_cline, prev_cchar);
                     }
                     KeyCode::Char('b') => {
                         repeat_action!(temp_str, {
@@ -1359,14 +1363,16 @@ fn main() {
                         repeat_action!(temp_str, {
                             buf.type_string(&clipboard);
                         });
-                        clipboard.clear();
                     }
                     KeyCode::Char('x') => {
                         repeat_action!(temp_str, {
+                            if buf.cline != buf.ecline
+                                || buf.ecchar == buf.contents[buf.ecline].chars().count() {
+                                buf.ecline += 1;
+                            }
                             buf.cchar = 0;
-                            buf.ecchar = 0;
-                            buf.ecline += 1;
                             buf.ensure_selection_end_inbound();
+                            buf.ecchar = buf.contents[buf.ecline].chars().count();
                         });
                     }
                     KeyCode::Char(',') => {

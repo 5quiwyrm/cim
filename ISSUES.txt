@@ -1,0 +1,3 @@
+
+- [X] selections should be inclusive!
+- [X] default.w doesn't correctly make selections.

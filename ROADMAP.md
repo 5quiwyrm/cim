@@ -64,7 +64,7 @@ This is the point at which I would probably switch over to cim.
 
 This phase will include features such as:
 
-- [X] Selections and registers
+- [P] Selections and registers
 - [ ] Syntax highlighting
 - [ ] Autocomplete
 - [ ] Language-based configuration
