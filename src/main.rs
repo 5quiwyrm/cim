@@ -6,6 +6,7 @@ use crossterm::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use std::{
+    collections::HashMap,
     env::args,
     fmt::{self, Write as fmtWrite},
     fs,
@@ -206,6 +207,23 @@ impl Buffer {
             self.make_selection_cursor();
             removed
         }
+    }
+
+    pub fn raw_enter(&mut self) {
+        let mut newline = String::new();
+        let mut deleted = 0;
+        for (idx, c) in self.contents[self.cline].chars().enumerate() {
+            if idx >= self.cchar {
+                newline.push(c);
+                deleted += 1;
+            }
+        }
+        for _ in 0..deleted {
+            _ = self.contents[self.cline].pop();
+        }
+        self.contents.insert(self.cline + 1, newline);
+        self.cline += 1;
+        self.cchar = 0;
     }
 
     pub fn enter(&mut self) {
@@ -612,12 +630,10 @@ impl Buffer {
         } else {
             (self.cline, self.ecline, self.cchar, self.ecchar)
         };
+        let lastlinelen = self.contents[ecline].chars().count();
         for (lnumberr, line) in self.contents[cline..(ecline + 1)].iter_mut().enumerate() {
             let lnumber = lnumberr + cline;
-            if lnumber == cline && cline == ecline && line.is_empty() {
-                line.push_str("DELETE ME NOW!! nshtm;cgaei");
-            } else if lnumber == cline && cline == ecline
-                && cchar == 0 && ecchar == line.chars().count() {
+            if cchar == 0 && ecchar == lastlinelen {
                 *line = String::from("DELETE ME NOW!! nshtm;cgaei");
             } else if lnumber == cline && cline == ecline {
                 let old_line = line.clone();
@@ -704,14 +720,14 @@ impl Buffer {
     pub fn type_string(&mut self, source: &str) {
         for ch in source.chars() {
             if ch == '\n' {
-                self.contents.insert(self.cline + 1, String::new());
-                self.cline += 1;
+                self.raw_enter();
             } else {
                 _ = self.type_char(ch);
             }
         }
         self.ensure_cursor_inbound();
         self.make_selection_cursor();
+        self.adjust_top();
         self.has_unsaved_changes = true;
     }
 
@@ -749,20 +765,53 @@ impl Buffer {
                     }
                 }
             } else if lnumber == ecline {
-                for c in line.chars().take(ecchar.saturating_sub(1)) {
+                for c in line.chars().take(ecchar) {
                     dest.push(c);
                 }
             } else {
                 dest.push_str(line.clone().as_str());
+                dest.push('\n')
             }
-            dest.push('\n')
         }
-        _ = dest.pop();
     }
 
     pub fn flip_selection_ends(&mut self) {
         (self.cline, self.ecline, self.cchar, self.ecchar) =
             (self.ecline, self.cline, self.ecchar, self.cchar);
+    }
+
+    // This wraps by default.
+    // This forbids multiline matches or regex, and treats escape characters literally.
+    pub fn goto_next_match(&mut self, query: &str) {
+        if let Some(p) = self.contents[self.cline]
+            .chars()
+            .skip(self.cchar + 1)
+            .collect::<String>()
+            .find(query)
+        {
+            self.cchar += p;
+            self.make_selection_cursor();
+            return;
+        } else if self.cline + 1 != self.contents.len() {
+            for (i, l) in self.contents[self.cline + 1..].iter().enumerate() {
+                if let Some(p) = l.find(query) {
+                    self.cline += i + 1;
+                    self.cchar = p;
+                    self.adjust_top();
+                    self.make_selection_cursor();
+                    return;
+                }
+            }
+            for (i, l) in self.contents[0..self.cline].iter().enumerate() {
+                if let Some(p) = l.find(query) {
+                    self.cline = i;
+                    self.cchar = p;
+                    self.adjust_top();
+                    self.make_selection_cursor();
+                    return;
+                }
+            }
+        }
     }
 }
 
@@ -772,6 +821,8 @@ pub enum DefaultState {
     Till,
     TillBack,
     Command,
+    RegisterPick,
+    InputToRegister,
 }
 
 pub enum Mode {
@@ -860,7 +911,8 @@ fn main() {
     let mut alert_spawn_instant: time::Instant = time::Instant::now();
     let mut alert_timeout: time::Duration = time::Duration::from_secs(10);
     let mut temp_str = String::new();
-    let mut clipboard = String::new();
+    let mut registers: HashMap<char, String> = HashMap::new();
+    let mut reg_char = 'a';
 
     let mut args = args().peekable();
     _ = args.next();
@@ -892,6 +944,16 @@ fn main() {
     _ = terminal::enable_raw_mode();
     let mut action: EDAction;
     'ed: loop {
+        let clipboard: &mut String;
+        if let Some(s) = registers.get_mut(&reg_char) {
+            clipboard = s;
+        } else {
+            registers.insert(reg_char, String::new());
+            clipboard = registers
+                .get_mut(&reg_char)
+                .expect("Just inserted, should exist");
+        }
+
         action = EDAction::None;
         if buffer_head >= buffers.len() {
             buffer_head = buffers.len().saturating_sub(1);
@@ -1004,9 +1066,21 @@ fn main() {
             outbuf.push_str("\x1b[0m\n");
         }
         let bottom_bar = if buf.has_unsaved_changes {
-            format!("[{}/{}: {}*]", buffer_head + 1, buffers_len, buf.filepath)
+            format!(
+                "[{}/{}: {}*] ({})",
+                buffer_head + 1,
+                buffers_len,
+                buf.filepath,
+                reg_char
+            )
         } else {
-            format!("[{}/{}: {}]", buffer_head + 1, buffers_len, buf.filepath)
+            format!(
+                "[{}/{}: {}] ({})",
+                buffer_head + 1,
+                buffers_len,
+                buf.filepath,
+                reg_char
+            )
         };
         {
             let mut width_printed = 0;
@@ -1170,6 +1244,12 @@ fn main() {
                                 print!("\x1bc\x1b[?25l");
                             }
                         }
+                        "cr" | "clear_register" => {
+                            clipboard.clear();
+                        }
+                        "car" | "clear_all_registers" => {
+                            registers.clear();
+                        }
                         _ => {
                             new_alert(
                                 &mut alert,
@@ -1214,7 +1294,41 @@ fn main() {
                 }
             },
 
-            Mode::Default(_) => match modifier {
+            Mode::Default(DefaultState::RegisterPick) => {
+                temp_str.clear();
+                if let KeyCode::Char(n) = key.code {
+                    reg_char = n;
+                }
+                mode = Mode::Default(DefaultState::Normal);
+            },
+
+            Mode::Default(DefaultState::InputToRegister) => match key.code {
+                KeyCode::Char(n) => {
+                    temp_str.push(n);
+                    clipboard.push(n);
+                }
+                KeyCode::Backspace => {
+                    clipboard.pop();
+                    temp_str.pop();
+                    if temp_str.is_empty() {
+                        mode = Mode::Default(DefaultState::Normal);
+                    }
+                }
+                KeyCode::Enter => {
+                    temp_str.clear();
+                    mode = Mode::Default(DefaultState::Normal);
+                    new_alert(
+                        &mut alert,
+                        &mut alert_spawn_instant,
+                        &mut alert_timeout,
+                        &[format!("{} -> '{}'", clipboard, reg_char)],
+                        time::Duration::from_secs(1),
+                    );
+                }
+                _ => {}
+            }
+
+            Mode::Default(DefaultState::Normal) => match modifier {
                 Modifiers::None | Modifiers::Shift => match key.code {
                     KeyCode::Char('c') => {
                         repeat_action!(temp_str, {
@@ -1357,27 +1471,54 @@ fn main() {
                         buf.make_selection_cursor();
                     }
                     KeyCode::Char('y') => {
-                        buf.yank_selection(&mut clipboard);
+                        buf.yank_selection(clipboard);
                     }
                     KeyCode::Char('p') => {
                         repeat_action!(temp_str, {
-                            buf.type_string(&clipboard);
+                            buf.type_string(clipboard);
                         });
                     }
                     KeyCode::Char('x') => {
                         repeat_action!(temp_str, {
                             if buf.cline != buf.ecline
-                                || buf.ecchar == buf.contents[buf.ecline].chars().count() {
+                                || (buf.ecchar == buf.contents[buf.ecline].chars().count()
+                                    && buf.cchar == 0)
+                            {
                                 buf.ecline += 1;
                             }
                             buf.cchar = 0;
-                            buf.ensure_selection_end_inbound();
                             buf.ecchar = buf.contents[buf.ecline].chars().count();
+                            buf.ensure_selection_end_inbound();
                         });
                     }
                     KeyCode::Char(',') => {
                         buf.flip_selection_ends();
                         temp_str.clear();
+                    }
+                    KeyCode::Char('\'') => {
+                        mode = Mode::Default(DefaultState::RegisterPick);
+                        temp_str.push('\'');
+                    }
+                    KeyCode::Backspace => {
+                        temp_str.pop();
+                    }
+                    KeyCode::Char('G') => {
+                        buf.cline = buf.contents.len().saturating_sub(1);
+                        buf.cchar = 0;
+                        buf.make_selection_cursor();
+                        buf.adjust_top();
+                        temp_str.clear();
+                    }
+                    KeyCode::Char('/') => {
+                        temp_str.clear();
+                        temp_str.push('/');
+                        clipboard.clear();
+                        mode = Mode::Default(DefaultState::InputToRegister);
+                    }
+                    KeyCode::Char('n') => {
+                        repeat_action!(temp_str, {
+                            buf.goto_next_match(clipboard);
+                        });
                     }
                     _ => {}
                 },

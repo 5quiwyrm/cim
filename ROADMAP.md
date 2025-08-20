@@ -64,12 +64,13 @@ This is the point at which I would probably switch over to cim.
 
 This phase will include features such as:
 
-- [P] Selections and registers
+- [X] Selections and registers
+- [ ] Find and goto
+- [ ] Basic shell interaction (running shell commands)
+- [ ] File picker
 - [ ] Syntax highlighting
 - [ ] Autocomplete
 - [ ] Language-based configuration
-- [ ] Basic shell interaction (running shell commands)
-- [ ] File picker
 
 ### Phase 3 - Surpassing bim
 
